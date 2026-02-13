@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Camera, CheckCircle2, Activity, ShieldCheck, Fingerprint, ShoppingBag, X, Clock, AlertTriangle } from 'lucide-react';
 import { foodApi } from '../services/foodApi';
+import { geminiApi } from '../services/geminiApi';
 
 const EvaluateFlow = ({ onScanComplete }) => {
     const [activeStep, setActiveStep] = useState(0);
@@ -83,76 +84,111 @@ const EvaluateFlow = ({ onScanComplete }) => {
         }
     };
 
+    // Helper to convert blob to base64
+    const blobToBase64 = (blob) => {
+        return new Promise((resolve, _) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result.split(',')[1]); // Remove data:image/...;base64,
+            reader.readAsDataURL(blob);
+        });
+    };
+
     const runAnalysis = async () => {
         setIsAnalyzing(true);
+        setFinalResult(null);
 
-        // FUTURE: Use this key for real API calls
-        const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-        if (!apiKey) {
-            console.log("Dev Mode: Simulating AI Analysis (No API Key found)");
-        }
+        try {
+            // 1. Get the first image (for demo simplicity, we analyze the first uploaded photo)
+            const activePhoto = photos.find(p => p.img);
+            if (!activePhoto) {
+                alert("Please upload at least one photo.");
+                setIsAnalyzing(false);
+                return;
+            }
 
-        // Simulate varying analysis time (2.5s - 4.5s)
-        const analysisTime = Math.floor(Math.random() * 2000) + 2500;
+            // Convert URL blob back to File/Blob for base64 conversion
+            const response = await fetch(activePhoto.img);
+            const blob = await response.blob();
+            const base64Image = await blobToBase64(blob);
 
-        setTimeout(() => {
-            setIsAnalyzing(false);
+            // 2. Call Gemini for Analysis
+            const aiResult = await geminiApi.analyzeImage(base64Image);
 
-            // 80% Verification Success Rate for Demo
-            const isSuccess = Math.random() > 0.2;
+            // 3. Check if it is Food
+            if (!aiResult.isFood) {
+                alert(`Error: This looks like ${aiResult.name || 'a non-food object'}. Please upload a clear photo of food.`);
+                setFlowState('failed');
+                setIsAnalyzing(false);
+                return;
+            }
 
-            if (isSuccess) {
-                // Randomize score between 70 and 99
-                const score = Math.floor(Math.random() * 30) + 70;
-                // Randomize refund slightly
-                const refund = (Math.random() * 50 + 150).toFixed(2);
+            // 4. If Food, Fetch Nutrition from Food API
+            let foodDetails = {
+                ingredients: aiResult.ingredients?.join(', ') || 'Verified',
+                calories: 'N/A'
+            };
 
-                // Try to fetch real food data if API is configured
-                let foodDetails = {
-                    ingredients: 'Verified',
-                    calories: 'N/A'
-                };
+            const detectedFood = aiResult.name;
+            console.log(`[Foodoscope] AI identified: ${detectedFood}`);
 
-                try {
-                    // Simulate detecting a food name (randomly chosen for demo variety)
-                    const demoFoods = ['Biryani', 'Pizza', 'Salad', 'Burger', 'Pasta'];
-                    const detectedFood = demoFoods[Math.floor(Math.random() * demoFoods.length)];
+            try {
+                const recipes = await foodApi.searchRecipes(detectedFood);
+                if (recipes && recipes.length > 0) {
+                    // Get nutrition for the best match
+                    const nutrition = await foodApi.getNutrition(recipes[0].id);
+                    if (nutrition) {
+                        foodDetails.calories = `${nutrition.calories || 'Unknown'} kcal`;
 
-                    // Call our new API service
-                    // Note: In a real app, this would be triggered by the image recognition result
-                    /* 
-                    const recipes = await foodApi.searchRecipes(detectedFood);
-                    if (recipes && recipes.length > 0) {
-                        const nutrition = await foodApi.getNutrition(recipes[0].id);
-                        if (nutrition) {
-                            foodDetails.calories = `${nutrition.calories} kcal`;
-                            foodDetails.ingredients = nutrition.ingredients?.map(i => i.name).slice(0, 3).join(', ') || 'Verified';
+                        // Merge ingredients from Gemini and API if available
+                        const apiIngredients = nutrition.ingredients?.map(i => i.name).slice(0, 5).join(', ');
+                        if (apiIngredients) {
+                            foodDetails.ingredients = apiIngredients;
                         }
                     }
-                    */
-                    // For now, we will just log that we would call it, to not break the demo without a real API key
-                    console.log(`[Foodoscope] Would fetch data for: ${detectedFood}`);
-                } catch (err) {
-                    console.error("API Integration Error", err);
                 }
-
-                const result = {
-                    visual: 'Match Confirmed',
-                    spoilage: score > 85 ? 'None Detected' : 'Minor Signs',
-                    ingredients: foodDetails.ingredients,
-                    score: score,
-                    refundAmount: `₹${refund}`,
-                    id: Date.now(),
-                    freshness: score > 90 ? 'Excellent' : 'Good',
-                    calories: foodDetails.calories
-                };
-                setFinalResult(result);
-                setFlowState('success');
-                if (onScanComplete) onScanComplete({ ...result, status: score > 80 ? 'Safe' : 'Caution', score: score });
-            } else {
-                setFlowState('failed');
+            } catch (apiErr) {
+                console.warn("Food API fetch failed, using AI details only:", apiErr);
             }
-        }, analysisTime);
+
+            // 5. Construct Final Result
+            // Randomize refund slightly for gamification
+            const refund = (Math.random() * 50 + 150).toFixed(2);
+            // Calculate a score based on "Freshness" (Simple qualitative mapping)
+            let score = 85;
+            if (aiResult.freshness?.toLowerCase().includes('rotten') || aiResult.freshness?.toLowerCase().includes('stale')) {
+                score = 45;
+            } else if (aiResult.freshness?.toLowerCase().includes('fresh')) {
+                score = 98;
+            }
+
+            const result = {
+                visual: 'Match Confirmed',
+                spoilage: score > 60 ? 'None Detected' : 'Signs of Spoilage',
+                ingredients: foodDetails.ingredients,
+                score: score,
+                refundAmount: `₹${refund}`,
+                id: Date.now(),
+                freshness: aiResult.freshness || 'Good',
+                calories: foodDetails.calories,
+                dishName: detectedFood
+            };
+
+            setFinalResult(result);
+            setFlowState('success');
+            if (onScanComplete) onScanComplete({
+                ...result,
+                dish: detectedFood,
+                status: score > 80 ? 'Safe' : score > 50 ? 'Caution' : 'Unsafe',
+                score: score
+            });
+
+        } catch (error) {
+            console.error("Critical Analysis Error:", error);
+            alert("Analysis failed. Please try again.");
+            setFlowState('failed');
+        } finally {
+            setIsAnalyzing(false);
+        }
     };
 
     const resetScan = () => {

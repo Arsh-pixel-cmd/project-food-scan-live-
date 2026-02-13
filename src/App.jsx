@@ -32,18 +32,12 @@ const App = () => {
   // App State to hold data shared across views
   const [scanHistory, setScanHistory] = useState(() => {
     const saved = localStorage.getItem('foodoscope_history');
-    return saved ? JSON.parse(saved) : [
-      { id: '1', dish: 'Saffron Biryani', date: 'Jan 28, 2026', points: '+10', status: 'Safe', score: 98, details: 'Excellent freshness detected.' },
-      { id: '2', dish: 'Chicken Salad', date: 'Jan 25, 2026', points: '+5', status: 'Caution', score: 65, details: 'Minor temperature inconsistencies.' },
-    ];
+    return saved ? JSON.parse(saved) : [];
   });
 
   const [reviews, setReviews] = useState(() => {
     const saved = localStorage.getItem('foodoscope_reviews');
-    return saved ? JSON.parse(saved) : [
-      { user: 'Siddharth', comment: 'Fresh and perfectly spiced!', pts: 50, rating: 5 },
-      { user: 'Priya', comment: 'Loved it. High quality.', pts: 50, rating: 4 },
-    ];
+    return saved ? JSON.parse(saved) : [];
   });
 
   // Persistence Effects
@@ -69,7 +63,7 @@ const App = () => {
     // Add result to history and award points
     const newScan = {
       id: Date.now().toString(),
-      dish: 'New Scan', // In a real app, this would come from the AI
+      dish: result.dish || result.dishName || 'Unknown Food',
       date: 'Just Now',
       points: '+15',
       status: result.score > 80 ? 'Safe' : result.score > 50 ? 'Caution' : 'Unsafe',
